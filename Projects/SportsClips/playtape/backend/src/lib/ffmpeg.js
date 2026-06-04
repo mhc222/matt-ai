@@ -11,9 +11,9 @@ import { config } from '../config/env.js';
 const execFileAsync = promisify(execFile);
 
 // Per-mode padding and hard duration caps
-const LEAD_IN  = { hitting: 0.5,  pitching: 3.5,  fielding: 0.8 };
-const TAIL     = { hitting: 2.5,  pitching: 1.0,  fielding: 1.5 };
-const MAX_SECS = { hitting: 12,   pitching: 10,   fielding: 10  };
+export const LEAD_IN  = { hitting: 0.5,  pitching: 3.5,  fielding: 0.8 };
+export const TAIL     = { hitting: 2.5,  pitching: 0.5,  fielding: 4.0 };
+export const MAX_SECS = { hitting: 12,   pitching: 10,   fielding: 12  };
 
 /**
  * Detect the first scene change — reliably marks end of GameChanger title card.
@@ -67,6 +67,23 @@ export async function trimVideo(inputPath, startSec, endSec, outputPath) {
     '-c:v', 'libx264', '-c:a', 'aac',
     outputPath,
   ]);
+}
+
+/**
+ * Returns the timestamp (seconds) when significant audio activity last ended.
+ * Uses ffmpeg silencedetect — the last silence_start = end of crowd/play noise.
+ * Returns null if no silence detected (whole clip is loud) or on error.
+ */
+export async function detectLastAudioActivity(filePath) {
+  const { stderr } = await execFileAsync('ffmpeg', [
+    '-i', filePath,
+    '-af', 'silencedetect=n=-25dB:d=0.3',
+    '-f', 'null', '-',
+  ]).catch(e => ({ stderr: e.stderr ?? '' }));
+
+  const matches = [...stderr.matchAll(/silence_start: ([\d.]+)/g)];
+  if (matches.length === 0) return null;
+  return parseFloat(matches.at(-1)[1]);
 }
 
 export async function getVideoDuration(filePath) {
@@ -124,6 +141,10 @@ export async function processClip(sourceKey, result, clipType = 'hitting') {
     if (gameplayStart > 0) {
       console.log(`[ffmpeg] gameplay at ${gameplayStart.toFixed(2)}s`);
       start = Math.max(start, gameplayStart);
+    }
+
+    if (end <= start) {
+      throw new Error(`[ffmpeg] invalid trim: start(${start.toFixed(2)}) >= end(${end.toFixed(2)}) — bogus Gemini timestamps`);
     }
 
     // Cut from RAW → full quality highlight

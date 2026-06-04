@@ -5,7 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { r2 } from './r2.js';
-import { generateProxy, getVideoDuration, trimVideo } from './ffmpeg.js';
+import { generateProxy, getVideoDuration, trimVideo, detectLastAudioActivity } from './ffmpeg.js';
 import { normalizeAnalysisResult } from './analysis.js';
 import { config } from '../config/env.js';
 
@@ -82,6 +82,10 @@ Use this exact shape:
   },
   "caption": "1-3 sentences, only clearly visible actions"
 }
+
+CRITICAL TIMESTAMP RULE: All start_sec and end_sec values in terminal_play and \
+recommended_trim MUST exactly match one of the start_sec or end_sec values \
+already listed in events[]. Do not invent timestamps not present in events[].
 
 All *_sec values are seconds from the start of the clip, as numbers.`;
 
@@ -167,6 +171,10 @@ Return STRICT JSON only. No markdown, no code fences.
   "caption": "1-3 sentences focused on the pitcher and generic result. Only visible facts."
 }
 
+CRITICAL TIMESTAMP RULE: All start_sec and end_sec values in terminal_play and \
+recommended_trim MUST exactly match one of the start_sec or end_sec values \
+already listed in events[]. Do not invent timestamps not present in events[].
+
 All *_sec values are seconds from the start of the clip, as numbers.`;
 
 // ── FIELDING ─────────────────────────────────────────────────────────────────
@@ -220,6 +228,10 @@ Return STRICT JSON only. No markdown, no code fences.
   },
   "caption": "1-3 sentences focused on the ${position} player's role. Only visible facts."
 }
+
+CRITICAL TIMESTAMP RULE: All start_sec and end_sec values in terminal_play and \
+recommended_trim MUST exactly match one of the start_sec or end_sec values \
+already listed in events[]. Do not invent timestamps not present in events[].
 
 All *_sec values are seconds from the start of the clip, as numbers.`;
 
@@ -341,7 +353,7 @@ async function analyzeSingleVideo(videoPath, outcomeTag = null, clipType = 'hitt
       config: {
         systemInstruction: getSystemInstruction(clipType, position),
         responseMimeType: 'application/json',
-        temperature: 1.0,
+        temperature: options.temperature ?? 1.0,
         thinkingConfig: { thinkingBudget: budget },
       },
     });
@@ -446,12 +458,12 @@ function hasBogusPitchingTimeline(result, windowStartSec) {
   );
 }
 
-async function analyzePitchingFocus(videoPath, outcomeTag, position, windowSecs) {
+async function analyzePitchingFocus(videoPath, outcomeTag, position, windowSecs, options = {}) {
   const duration = await getVideoDuration(videoPath);
   const windowStart = Math.max(0, duration - windowSecs);
   if (windowStart <= 0.5) {
     return {
-      result: await analyzeSingleVideo(videoPath, outcomeTag, 'pitching', position),
+      result: await analyzeSingleVideo(videoPath, outcomeTag, 'pitching', position, { temperature: options.temperature }),
       windowStart: 0,
       duration,
     };
@@ -469,6 +481,7 @@ async function analyzePitchingFocus(videoPath, outcomeTag, position, windowSecs)
     const result = await analyzeSingleVideo(tmpFocus, outcomeTag, 'pitching', position, {
       timeOffsetSec: windowStart,
       promptContext: context,
+      temperature: options.temperature,
     });
     return { result, windowStart, duration };
   } finally {
@@ -476,12 +489,31 @@ async function analyzePitchingFocus(videoPath, outcomeTag, position, windowSecs)
   }
 }
 
+function isTimestampFarFromAudio(result, lastAudioSec) {
+  const startSec = Number(result?.recommended_trim?.start_sec);
+  if (!Number.isFinite(startSec)) return false;
+  // Terminal pitch should start within 15s before audio activity ends
+  return lastAudioSec - startSec > 15;
+}
+
 async function analyzePitchingWindow(videoPath, outcomeTag = null, position = null) {
-  const analysis = await analyzePitchingFocus(videoPath, outcomeTag, position, PITCHING_FOCUS_WINDOW_SECS);
-  if (hasBogusPitchingTimeline(analysis.result, analysis.windowStart)) {
-    console.warn('[gemini] suspicious pitching timeline; preserving result but suppressing strikeout subtype');
+  const lastAudio = await detectLastAudioActivity(videoPath).catch(() => null);
+  if (lastAudio !== null) console.log(`[gemini] last audio activity: ${lastAudio.toFixed(2)}s`);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const temperature = attempt === 0 ? 1.0 : 0.3;
+    const analysis = await analyzePitchingFocus(videoPath, outcomeTag, position, PITCHING_FOCUS_WINDOW_SECS, { temperature });
+    const bogus = hasBogusPitchingTimeline(analysis.result, analysis.windowStart) ||
+      (lastAudio !== null && isTimestampFarFromAudio(analysis.result, lastAudio));
+    if (!bogus) {
+      return normalizePitchingStrikeoutForMvp(analysis.result, outcomeTag);
+    }
+    console.warn(`[gemini] suspicious pitching timeline (attempt ${attempt + 1}/2)${attempt < 1 ? '; retrying at lower temperature' : '; exhausted retries'}`);
   }
-  return normalizePitchingStrikeoutForMvp(analysis.result, outcomeTag);
+  // Both focus window attempts bogus — widen window as last resort
+  console.warn('[gemini] falling back to wider window (40s)');
+  const wideAnalysis = await analyzePitchingFocus(videoPath, outcomeTag, position, 40, { temperature: 0.3 });
+  return normalizePitchingStrikeoutForMvp(wideAnalysis.result, outcomeTag);
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -489,12 +521,29 @@ async function analyzePitchingWindow(videoPath, outcomeTag = null, position = nu
 /**
  * Analyze a local video file. Returns the full Gemini result object.
  */
+function hasBogusNonPitchingResult(result) {
+  const startSec = Number(result?.recommended_trim?.start_sec);
+  const endSec   = Number(result?.recommended_trim?.end_sec);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) return true;
+  if (endSec - startSec < 0.5) return true;  // sub-half-second trim
+  if (startSec < 1.0) return true;            // near-zero timestamp
+  return false;
+}
+
 export async function analyzeAtBat(videoPath, outcomeTag = null, clipType = 'hitting', position = null) {
   if (clipType === 'pitching') {
     return analyzePitchingWindow(videoPath, outcomeTag, position);
   }
 
-  return analyzeSingleVideo(videoPath, outcomeTag, clipType, position);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const temperature = attempt === 0 ? 1.0 : 0.3;
+    const result = await analyzeSingleVideo(videoPath, outcomeTag, clipType, position, { temperature });
+    if (!hasBogusNonPitchingResult(result)) return result;
+    console.warn(`[gemini] bogus ${clipType} timestamps (attempt ${attempt + 1}/2)${attempt < 1 ? '; retrying at lower temperature' : '; exhausted retries'}`);
+  }
+  // Return last result even if bogus — processClip will guard against crash
+  console.warn(`[gemini] could not recover ${clipType} timestamps; using last result`);
+  return analyzeSingleVideo(videoPath, outcomeTag, clipType, position, { temperature: 0.3 });
 }
 
 /**

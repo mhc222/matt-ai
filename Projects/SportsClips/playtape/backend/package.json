@@ -1,0 +1,29 @@
+{
+  "name": "playtape-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PlayTape backend: API, auth, and the detect-then-trim video pipeline",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "trigger:dev": "trigger dev",
+    "trigger:deploy": "trigger deploy"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.620.0",
+    "@aws-sdk/s3-request-presigner": "^3.620.0",
+    "@fastify/cors": "^9.0.1",
+    "@google/genai": "^2.7.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "@trigger.dev/sdk": "^4.4.6",
+    "bullmq": "^5.12.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.0",
+    "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "@trigger.dev/build": "^4.4.6",
+    "trigger.dev": "^4.4.6"
+  }
+}
