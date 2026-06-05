@@ -136,7 +136,47 @@ function reconcilePitchingResult(result, outcomeTag) {
   return normalized;
 }
 
+function reconcileHittingResult(result) {
+  const events = Array.isArray(result?.events) ? result.events : [];
+  const terminalIndex = asNumber(result?.terminal_play?.event_index);
+
+  // Find all windup events before (or at) the terminal play
+  const windups = events
+    .filter(e => normalizeText(e?.type) === 'windup')
+    .map(e => ({ event: e, start: eventStart(e), index: eventIndex(e) }))
+    .filter(({ start }) => start !== null);
+
+  if (windups.length === 0) return result;
+
+  // Pick the last windup that precedes the terminal play
+  const candidates = terminalIndex !== null
+    ? windups.filter(({ index }) => index === null || index <= terminalIndex)
+    : windups;
+
+  const chosen = (candidates.length > 0 ? candidates : windups).at(-1);
+  if (!chosen) return result;
+
+  const currentStart = asNumber(result?.recommended_trim?.start_sec);
+
+  // Only override if the current trim start is AFTER the windup (i.e. missed it)
+  if (currentStart !== null && currentStart <= chosen.start + 0.5) return result;
+
+  return {
+    ...result,
+    recommended_trim: {
+      ...(result.recommended_trim ?? {}),
+      start_sec: chosen.start,
+      rationale: `Backend reconciliation: forced trim start to windup event at ${chosen.start}s (event ${chosen.index ?? 'unknown'}).`,
+    },
+    selection_audit: {
+      ...(result.selection_audit ?? {}),
+      backend_windup_reconciled: true,
+      backend_windup_start_sec: chosen.start,
+    },
+  };
+}
+
 export function normalizeAnalysisResult(result, { clipType = 'hitting', outcomeTag = null } = {}) {
-  if (clipType !== 'pitching') return result;
-  return reconcilePitchingResult(result, outcomeTag);
+  if (clipType === 'pitching') return reconcilePitchingResult(result, outcomeTag);
+  return reconcileHittingResult(result);
 }

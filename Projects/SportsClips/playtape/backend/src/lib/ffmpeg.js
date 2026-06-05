@@ -12,8 +12,8 @@ const execFileAsync = promisify(execFile);
 
 // Per-mode padding and hard duration caps
 export const LEAD_IN  = { hitting: 0.5,  pitching: 3.5,  fielding: 0.8 };
-export const TAIL     = { hitting: 2.5,  pitching: 0.5,  fielding: 4.0 };
-export const MAX_SECS = { hitting: 12,   pitching: 10,   fielding: 12  };
+export const TAIL     = { hitting: 1.0,  pitching: 0.5,  fielding: 2.0 };
+export const MAX_SECS = { hitting: 30,   pitching: 10,   fielding: 12  };
 
 /**
  * Detect the first scene change — reliably marks end of GameChanger title card.
@@ -60,11 +60,14 @@ export async function generateProxy(inputPath, outputPath) {
  * Frame-accurate ffmpeg cut. Re-encodes for precision on short clips.
  */
 export async function trimVideo(inputPath, startSec, endSec, outputPath) {
+  const duration = (endSec - startSec).toFixed(2);
   await execFileAsync('ffmpeg', [
-    '-y', '-i', inputPath,
-    '-ss', startSec.toFixed(2),
-    '-to', endSec.toFixed(2),
+    '-y',
+    '-ss', startSec.toFixed(2),  // input seek (fast, keyframe-aligned)
+    '-i', inputPath,
+    '-t', duration,               // duration from seek point
     '-c:v', 'libx264', '-c:a', 'aac',
+    '-movflags', '+faststart',    // web-playback friendly
     outputPath,
   ]);
 }

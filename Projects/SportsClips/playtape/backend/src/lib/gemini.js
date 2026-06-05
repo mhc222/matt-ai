@@ -42,11 +42,12 @@ Find the perfect END FRAME for the highlight — the natural dramatic beat where
 skilled sports editor would cut. Think like an editor:
 
 TARGET: 6–10 seconds total. Windup through the runner reaching base. Tight is good.
-- Start: the windup IMMEDIATELY before the decisive pitch — not the start of the at-bat
-- End: one beat after the runner plants her foot on the bag. ONE beat. Then cut.
-  Do NOT wait for the helmet adjustment, the dugout celebration, or dead time.
-  The runner touching the bag safely IS the cut point for extra-base hits.
-  For a strikeout or groundout: cut when the out is recorded, not after.
+- Start: ALWAYS the windup IMMEDIATELY before the decisive pitch. This is non-negotiable. Never start on a runner in motion, never start on a celebration, never start after contact. The highlight MUST begin with pitch movement.
+- End: depends on the play:
+  - Home run: end_sec = one beat after the batter crosses HOME PLATE to score. Do NOT cut when ball clears the fence — wait for her to complete the full trip around the bases.
+  - Extra-base hit (double/triple): one beat after runner plants foot on the bag safely.
+  - Strikeout or out: cut when the out is recorded, not after.
+  - Single: one beat after runner reaches first base safely.
 - AVOID cutting during: mid-stride, ball mid-air, or any unresolved motion.
 - If end_sec - start_sec > 10, you are cutting too late. Trim harder.
 - Set recommended_trim.start_sec to the windup IMMEDIATELY before the decisive pitch.
@@ -235,6 +236,204 @@ already listed in events[]. Do not invent timestamps not present in events[].
 
 All *_sec values are seconds from the start of the clip, as numbers.`;
 
+// ── TWO-PASS: Pass 1 system instructions (segmentation only, no selection) ────
+const PASS1_INSTRUCTIONS = {
+  hitting: `\
+You are a softball video analyst. Segment this at-bat clip into chronological events.
+Do NOT select a terminal play. Do NOT recommend any trim. List every observable event only.
+
+Assign each event a sequential string ID starting from "e01", "e02", "e03", etc.
+
+Event types: windup, pitch_ball, pitch_called_strike, pitch_swing_miss, foul, contact_fair, timeout, dead_time, other
+
+Return STRICT JSON only. No markdown, no code fences.
+{
+  "at_bat_summary": "one sentence describing what happens in the clip",
+  "events": [
+    { "id": "e01", "type": "string", "start_sec": 0.0, "end_sec": 0.0, "description": "only what is clearly visible" }
+  ]
+}
+
+CRITICAL: Describe only what you can clearly see. Do not infer, guess, or embellish.`,
+
+  pitching: `\
+You are a softball video analyst. Segment this pitching clip into chronological events.
+Focus on the pitcher. List EVERY pitch, reset, dead-time, and reaction event chronologically.
+Do NOT select a terminal play. Do NOT recommend any trim.
+
+Assign each event a sequential string ID: "e01", "e02", "e03", etc.
+
+Event types: windup, pitch_ball, pitch_called_strike, pitch_swing_miss, foul, contact_fair, contact_foul_out, timeout, dead_time, other
+
+Return STRICT JSON only. No markdown, no code fences.
+{
+  "at_bat_summary": "one sentence from the pitcher's perspective",
+  "events": [
+    { "id": "e01", "type": "string", "start_sec": 0.0, "end_sec": 0.0, "description": "pitch type + location + result if visible" }
+  ]
+}
+
+CRITICAL: Describe only what you can clearly see. Do not guess pitch type unless spin or movement is unambiguous.`,
+
+  fielding: (position) => `\
+You are a softball video analyst. Segment this defensive play clip into chronological events.
+Focus on the ${position} player. List every observable event. Do NOT recommend any trim.
+
+Assign each event a sequential string ID: "e01", "e02", "e03", etc.
+
+Event types: ball_in_play, throw_received, scoop, tag, putout, error, timeout, dead_time, other
+
+Return STRICT JSON only. No markdown, no code fences.
+{
+  "at_bat_summary": "one sentence from the ${position} player's perspective",
+  "events": [
+    { "id": "e01", "type": "string", "start_sec": 0.0, "end_sec": 0.0, "description": "what the ${position} player did" }
+  ]
+}`,
+};
+
+// ── TWO-PASS: Pass 2 system instructions (selection from events, no video) ────
+const PASS2_INSTRUCTIONS = {
+  hitting: `\
+You are a sports video editor. You are given a list of softball events extracted from a clip.
+Your ONLY job: select the best highlight play and recommend trim boundaries using event IDs from the list.
+Do NOT re-analyze video. Use ONLY the events provided.
+
+SELECTION RULES:
+1. If multiple distinct plays exist, select the highest highlight value: home run > triple > double > strikeout > single > walk > out
+2. Trim start: ALWAYS the "windup" event immediately before the decisive pitch — never after contact
+3. Trim end by outcome:
+   - home run: event after batter crosses home plate (NOT when ball clears fence — she must complete the full trip)
+   - extra-base hit: event after runner reaches the bag
+   - strikeout / out: event when the out is recorded
+   - single: event after runner reaches first base safely
+
+Return STRICT JSON only. No markdown, no code fences.
+{
+  "terminal_play": {
+    "event_id": "e05",
+    "outcome": "home run",
+    "matches_provided_tag": false,
+    "reasoning": "why this is the terminal play"
+  },
+  "recommended_trim": {
+    "start_event_id": "e03",
+    "start_boundary": "start_sec",
+    "end_event_id": "e07",
+    "end_boundary": "end_sec"
+  },
+  "caption": "1-3 sentences using only facts from the provided events"
+}`,
+
+  pitching: `\
+You are a sports video editor. You are given a list of softball pitching events extracted from a clip.
+Your ONLY job: identify the terminal pitch and recommend trim boundaries using event IDs.
+
+SELECTION RULES:
+1. Terminal pitch: the LAST pitch-like event before the end-of-play reaction (walk, umpire call, celebration)
+2. For strikeouts: must be the THIRD strike — not strike one or two. Check that no later pitch-like event exists.
+3. Trim start: "windup" event immediately before the terminal pitch
+4. Trim end: umpire call or first clear reaction after the terminal pitch (not before)
+
+Return STRICT JSON only. No markdown, no code fences.
+{
+  "terminal_play": {
+    "event_id": "e08",
+    "outcome": "strikeout",
+    "matches_provided_tag": true,
+    "reasoning": "why this is the terminal pitch"
+  },
+  "recommended_trim": {
+    "start_event_id": "e07",
+    "start_boundary": "start_sec",
+    "end_event_id": "e09",
+    "end_boundary": "end_sec"
+  },
+  "caption": "1-3 sentences focused on the pitcher. Only visible facts."
+}`,
+
+  fielding: (position) => `\
+You are a sports video editor. You are given a list of softball fielding events for the ${position} player.
+Your ONLY job: select the key play and recommend trim boundaries using event IDs.
+
+Return STRICT JSON only. No markdown, no code fences.
+{
+  "terminal_play": {
+    "event_id": "e03",
+    "outcome": "putout",
+    "matches_provided_tag": true,
+    "reasoning": "why this is the key play"
+  },
+  "recommended_trim": {
+    "start_event_id": "e02",
+    "start_boundary": "start_sec",
+    "end_event_id": "e04",
+    "end_boundary": "end_sec"
+  },
+  "caption": "1-3 sentences focused on the ${position} player. Only visible facts."
+}`,
+};
+
+function getPass1SystemInstruction(clipType, position) {
+  if (clipType === 'pitching') return PASS1_INSTRUCTIONS.pitching;
+  if (clipType === 'fielding') return PASS1_INSTRUCTIONS.fielding(position ?? 'fielder');
+  return PASS1_INSTRUCTIONS.hitting;
+}
+
+function getPass2SystemInstruction(clipType, position) {
+  if (clipType === 'pitching') return PASS2_INSTRUCTIONS.pitching;
+  if (clipType === 'fielding') return PASS2_INSTRUCTIONS.fielding(position ?? 'fielder');
+  return PASS2_INSTRUCTIONS.hitting;
+}
+
+function buildPass1UserPrompt(clipType) {
+  if (clipType === 'pitching') return 'Segment this pitching clip. List every observable event chronologically.';
+  if (clipType === 'fielding') return 'Segment this fielding clip. List every observable event involving the highlighted player.';
+  return 'Segment this at-bat. List every observable event chronologically including every pitch, foul, contact, and reaction.';
+}
+
+function buildPass2UserPrompt(events, outcomeTag, clipType, context = '') {
+  const eventsJson = JSON.stringify(events, null, 2);
+  const outcomeHint = outcomeTag
+    ? `\nGameChanger outcome tag: "${outcomeTag}" — use this to confirm the terminal play selection.`
+    : '\nNo outcome tag provided. Select the most highlight-worthy play from the events.';
+  const correctionHint = context ? `\n\nCorrection note: ${context}` : '';
+  return `Here are the events extracted from the clip:\n\n${eventsJson}\n${outcomeHint}${correctionHint}\n\nSelect the terminal play and recommend trim boundaries using the event IDs above.`;
+}
+
+function resolveEventIds(result) {
+  const events = Array.isArray(result?.events) ? result.events : [];
+  const rt = result?.recommended_trim ?? {};
+  const tp = result?.terminal_play ?? {};
+
+  // Already in timestamp format (single-pass or already resolved)
+  if (rt.start_sec != null && rt.end_sec != null) return result;
+  if (!rt.start_event_id && !rt.end_event_id) return result;
+
+  const eventMap = new Map(events.map(e => [e.id, e]));
+  const startEvent = eventMap.get(rt.start_event_id);
+  const endEvent = eventMap.get(rt.end_event_id);
+  const terminalEvent = eventMap.get(tp.event_id);
+
+  const startSec = startEvent?.[rt.start_boundary ?? 'start_sec'] ?? startEvent?.start_sec;
+  const endSec = endEvent?.[rt.end_boundary ?? 'end_sec'] ?? endEvent?.end_sec;
+
+  return {
+    ...result,
+    terminal_play: {
+      ...tp,
+      event_index: terminalEvent ? events.findIndex(e => e.id === tp.event_id) + 1 : (tp.event_index ?? null),
+      start_sec: terminalEvent?.start_sec ?? tp.start_sec ?? null,
+      end_sec: terminalEvent?.end_sec ?? tp.end_sec ?? null,
+    },
+    recommended_trim: {
+      ...rt,
+      start_sec: startSec ?? null,
+      end_sec: endSec ?? null,
+    },
+  };
+}
+
 function buildUserPrompt(outcomeTag, clipType = 'hitting', context = '') {
   const prefix = clipType === 'pitching' ? 'Analyze this pitching clip.'
     : clipType === 'fielding' ? 'Analyze this fielding clip.'
@@ -251,7 +450,7 @@ function buildUserPrompt(outcomeTag, clipType = 'hitting', context = '') {
 
   const base = outcomeTag
     ? `The GameChanger outcome tag is "${outcomeTag}". Use it to identify the terminal play. Set matches_provided_tag accordingly.`
-    : 'No outcome tag provided — infer the result and set matches_provided_tag to false.';
+    : 'No outcome tag provided. Watch the ENTIRE clip like a sportscaster. This clip may contain multiple plays or at-bats. Step 1: identify ALL significant plays. Step 2: rank them by highlight value — home run > triple > double > strikeout > single > walk > fly out > ground out. Step 3: select ONLY the single highest-value play for the highlight reel. Return only that play\'s events and trim. Set terminal_play.outcome to the selected play outcome. Set matches_provided_tag to false.';
   return `${prefix} ${contextText}${base}`;
 }
 
@@ -381,6 +580,88 @@ async function analyzeSingleVideo(videoPath, outcomeTag = null, clipType = 'hitt
   throw new Error('Gemini analysis did not return JSON');
 }
 
+async function analyzeTwoPass(videoPath, outcomeTag = null, clipType = 'hitting', position = null, options = {}) {
+  const ai = new GoogleGenAI({ apiKey: config.gemini.apiKey });
+  const file = await uploadAndWait(ai, videoPath);
+
+  const FPS_MAP = { hitting: 5, pitching: 8, fielding: 3 };
+  const fps = options.fps ?? FPS_MAP[clipType] ?? config.gemini.fps;
+
+  // ── Pass 1: Segmentation (minimal thinking, video in, events out) ────────
+  let events = [];
+  let atBatSummary = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const promptText = buildPass1UserPrompt(clipType) + (attempt > 0 ? '\n\nReturn valid JSON only.' : '');
+    console.log(`[gemini] pass1 model=${config.gemini.model} fps=${fps}${attempt ? ' retry=1' : ''}...`);
+    const response = await ai.models.generateContent({
+      model: config.gemini.model,
+      contents: [{ role: 'user', parts: [
+        { fileData: { fileUri: file.uri, mimeType: 'video/mp4' }, videoMetadata: { fps } },
+        { text: promptText },
+      ]}],
+      config: {
+        systemInstruction: getPass1SystemInstruction(clipType, position),
+        responseMimeType: 'application/json',
+        temperature: 1.0,
+        thinkingConfig: { thinkingBudget: 512 },
+      },
+    });
+    const usage = response.usageMetadata;
+    if (usage) console.log(`[gemini] pass1 tokens: input=${usage.promptTokenCount} output=${usage.candidatesTokenCount}`);
+    let text = (response.text ?? '').trim().replace(/^```[^\n]*\n?/, '').replace(/```$/, '');
+    try {
+      const parsed = JSON.parse(text);
+      events = Array.isArray(parsed.events) ? parsed.events : [];
+      atBatSummary = parsed.at_bat_summary ?? '';
+      break;
+    } catch (err) {
+      if (attempt === 1) throw new Error(`Pass 1 JSON parse failed: ${err.message}`);
+    }
+  }
+  if (!events.length) throw new Error('Pass 1 returned no events');
+
+  // ── Pass 2: Selection (thinking on, text only — no video) ────────────────
+  const THINKING_MAP2 = { hitting: 2048, pitching: 3072, fielding: 1024 };
+  const budget2 = THINKING_MAP2[clipType] ?? 2048;
+  let pass2Result = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const promptText = buildPass2UserPrompt(events, outcomeTag, clipType, options.promptContext)
+      + (attempt > 0 ? '\n\nReturn valid JSON only.' : '');
+    console.log(`[gemini] pass2 thinking=${budget2}${attempt ? ' retry=1' : ''}...`);
+    const response = await ai.models.generateContent({
+      model: config.gemini.model,
+      contents: [{ role: 'user', parts: [{ text: promptText }] }],
+      config: {
+        systemInstruction: getPass2SystemInstruction(clipType, position),
+        responseMimeType: 'application/json',
+        temperature: 1.0,
+        thinkingConfig: { thinkingBudget: budget2 },
+      },
+    });
+    const usage = response.usageMetadata;
+    if (usage) console.log(`[gemini] pass2 tokens: input=${usage.promptTokenCount} output=${usage.candidatesTokenCount}`);
+    let text = (response.text ?? '').trim().replace(/^```[^\n]*\n?/, '').replace(/```$/, '');
+    try {
+      pass2Result = JSON.parse(text);
+      break;
+    } catch (err) {
+      if (attempt === 1) throw new Error(`Pass 2 JSON parse failed: ${err.message}`);
+    }
+  }
+
+  // ── Combine + resolve event IDs to timestamps ────────────────────────────
+  const combined = {
+    at_bat_summary: atBatSummary,
+    events,
+    terminal_play: pass2Result.terminal_play ?? {},
+    recommended_trim: pass2Result.recommended_trim ?? {},
+    caption: pass2Result.caption ?? '',
+  };
+  const resolved = resolveEventIds(combined);
+  const offsetResult = offsetAnalysisTimestamps(resolved, options.timeOffsetSec ?? 0);
+  return normalizeAnalysisResult(offsetResult, { clipType, outcomeTag });
+}
+
 function isStrikeoutAnalysis(result, outcomeTag) {
   const text = `${outcomeTag ?? ''} ${result?.terminal_play?.outcome ?? ''}`.toLowerCase();
   return /\b(strikeout|strike out|struck out|k)\b/.test(text);
@@ -463,25 +744,23 @@ async function analyzePitchingFocus(videoPath, outcomeTag, position, windowSecs,
   const windowStart = Math.max(0, duration - windowSecs);
   if (windowStart <= 0.5) {
     return {
-      result: await analyzeSingleVideo(videoPath, outcomeTag, 'pitching', position, { temperature: options.temperature }),
+      result: await analyzeTwoPass(videoPath, outcomeTag, 'pitching', position, { promptContext: options.promptContext }),
       windowStart: 0,
       duration,
     };
   }
 
   const tmpFocus = path.join(os.tmpdir(), `playtape-pitch-focus-${Date.now()}.mp4`);
-  const context = (
+  const context = (options.promptContext ? options.promptContext + ' ' : '') +
     'This video is the late portion of the original clip. Earlier pitch history may be omitted. ' +
-    'Find the final pitch before the plate appearance ends in this excerpt.'
-  );
+    'Find the final pitch before the plate appearance ends in this excerpt.';
 
   console.log(`[gemini] pitching focus window ${windowStart.toFixed(2)}s -> ${duration.toFixed(2)}s`);
   await trimVideo(videoPath, windowStart, duration, tmpFocus);
   try {
-    const result = await analyzeSingleVideo(tmpFocus, outcomeTag, 'pitching', position, {
+    const result = await analyzeTwoPass(tmpFocus, outcomeTag, 'pitching', position, {
       timeOffsetSec: windowStart,
       promptContext: context,
-      temperature: options.temperature,
     });
     return { result, windowStart, duration };
   } finally {
@@ -500,19 +779,25 @@ async function analyzePitchingWindow(videoPath, outcomeTag = null, position = nu
   const lastAudio = await detectLastAudioActivity(videoPath).catch(() => null);
   if (lastAudio !== null) console.log(`[gemini] last audio activity: ${lastAudio.toFixed(2)}s`);
 
+  let lastPitchResult = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const temperature = attempt === 0 ? 1.0 : 0.3;
-    const analysis = await analyzePitchingFocus(videoPath, outcomeTag, position, PITCHING_FOCUS_WINDOW_SECS, { temperature });
+    const correctionContext = attempt === 0 || !lastPitchResult ? undefined
+      : 'Your previous response had suspicious timestamps — all pitch events were compressed into less than 2 seconds, which is physically impossible. Re-analyze the focus window carefully and map each pitch event to its actual timestamp in the clip.';
+    const analysis = await analyzePitchingFocus(videoPath, outcomeTag, position, PITCHING_FOCUS_WINDOW_SECS, {
+      temperature: 1.0,  // never lower temp — breaks thinking mode
+      promptContext: correctionContext,
+    });
     const bogus = hasBogusPitchingTimeline(analysis.result, analysis.windowStart) ||
       (lastAudio !== null && isTimestampFarFromAudio(analysis.result, lastAudio));
     if (!bogus) {
       return normalizePitchingStrikeoutForMvp(analysis.result, outcomeTag);
     }
-    console.warn(`[gemini] suspicious pitching timeline (attempt ${attempt + 1}/2)${attempt < 1 ? '; retrying at lower temperature' : '; exhausted retries'}`);
+    lastPitchResult = analysis.result;
+    console.warn(`[gemini] suspicious pitching timeline (attempt ${attempt + 1}/2)${attempt < 1 ? '; retrying with correction prompt' : '; exhausted retries'}`);
   }
   // Both focus window attempts bogus — widen window as last resort
   console.warn('[gemini] falling back to wider window (40s)');
-  const wideAnalysis = await analyzePitchingFocus(videoPath, outcomeTag, position, 40, { temperature: 0.3 });
+  const wideAnalysis = await analyzePitchingFocus(videoPath, outcomeTag, position, 40, { temperature: 1.0 });
   return normalizePitchingStrikeoutForMvp(wideAnalysis.result, outcomeTag);
 }
 
@@ -521,12 +806,13 @@ async function analyzePitchingWindow(videoPath, outcomeTag = null, position = nu
 /**
  * Analyze a local video file. Returns the full Gemini result object.
  */
-function hasBogusNonPitchingResult(result) {
+function hasBogusNonPitchingResult(result, videoDurationSec = null) {
   const startSec = Number(result?.recommended_trim?.start_sec);
   const endSec   = Number(result?.recommended_trim?.end_sec);
   if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) return true;
   if (endSec - startSec < 0.5) return true;  // sub-half-second trim
   if (startSec < 1.0) return true;            // near-zero timestamp
+  if (videoDurationSec !== null && startSec > videoDurationSec - 2) return true; // past end of video
   return false;
 }
 
@@ -535,15 +821,21 @@ export async function analyzeAtBat(videoPath, outcomeTag = null, clipType = 'hit
     return analyzePitchingWindow(videoPath, outcomeTag, position);
   }
 
+  const videoDuration = await getVideoDuration(videoPath).catch(() => null);
+  let lastResult = null;
+
   for (let attempt = 0; attempt < 2; attempt++) {
-    const temperature = attempt === 0 ? 1.0 : 0.3;
-    const result = await analyzeSingleVideo(videoPath, outcomeTag, clipType, position, { temperature });
-    if (!hasBogusNonPitchingResult(result)) return result;
-    console.warn(`[gemini] bogus ${clipType} timestamps (attempt ${attempt + 1}/2)${attempt < 1 ? '; retrying at lower temperature' : '; exhausted retries'}`);
+    const correctionContext = attempt === 0 || !lastResult ? undefined
+      : `Previous attempt returned start_sec=${lastResult?.recommended_trim?.start_sec?.toFixed(1)} in a ${videoDuration?.toFixed(1)}s video. All timestamps must be within the video duration. Re-analyze carefully.`;
+    const result = await analyzeTwoPass(videoPath, outcomeTag, clipType, position, {
+      promptContext: correctionContext,
+    });
+    if (!hasBogusNonPitchingResult(result, videoDuration)) return result;
+    lastResult = result;
+    console.warn(`[gemini] bogus ${clipType} timestamps (attempt ${attempt + 1}/2)${attempt < 1 ? '; retrying with correction prompt' : '; exhausted retries'}`);
   }
-  // Return last result even if bogus — processClip will guard against crash
   console.warn(`[gemini] could not recover ${clipType} timestamps; using last result`);
-  return analyzeSingleVideo(videoPath, outcomeTag, clipType, position, { temperature: 0.3 });
+  return lastResult;
 }
 
 /**
