@@ -1,0 +1,15 @@
+# Runtime queue data (not for source control)
+queue/pending/*.json
+queue/processed/*.json
+queue/.last_run
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Env
+.env
+.env.local

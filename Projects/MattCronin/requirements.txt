@@ -1,0 +1,15 @@
+# Matt Cronin Sales Agent — Python dependencies
+# Install: pip install -r requirements.txt
+# Then: playwright install chromium
+
+# Browser automation
+browser-use>=0.1.40
+playwright>=1.44.0
+
+# LLM clients (BrowserUse uses LangChain)
+langchain-anthropic>=0.1.0
+anthropic>=0.26.0
+
+# Optional: if using OpenAI as fallback in BrowserUse
+# openai>=1.0.0
+# langchain-openai>=0.1.0

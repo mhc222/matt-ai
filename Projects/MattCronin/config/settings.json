@@ -1,0 +1,75 @@
+{
+  "vibes": {
+    "company_name": "Vibes",
+    "product": "Mobile marketing and customer engagement platform",
+    "website": "vibes.com",
+    "sender_email": "mcronin@vibes.com"
+  },
+  "icp": {
+    "target_industries": [
+      "Retail",
+      "Financial Services",
+      "CPG",
+      "Travel & Hospitality",
+      "Telecom"
+    ],
+    "target_titles": [
+      "VP Marketing",
+      "SVP Marketing",
+      "Director Digital Marketing",
+      "Director CRM",
+      "CMO",
+      "Head of Mobile",
+      "VP Customer Engagement",
+      "Director Mobile"
+    ],
+    "target_company_size_min_employees": 500
+  },
+  "hubspot": {
+    "deal_stages": {
+      "Prospecting":      { "stale_after_days": 14 },
+      "Qualified":        { "stale_after_days": 7 },
+      "Demo Scheduled":   { "stale_after_days": 3 },
+      "Proposal Sent":    { "stale_after_days": 5 },
+      "Negotiation":      { "stale_after_days": 3 }
+    },
+    "pipeline_name": "Sales Pipeline",
+    "skip_stages": ["Closed Won", "Closed Lost"]
+  },
+  "slack": {
+    "approvals_channel": "#matt-agent-approvals",
+    "bot_name": "Matt Agent"
+  },
+  "email": {
+    "max_daily_sends": 20,
+    "send_window_start_hour": 8,
+    "send_window_end_hour": 17,
+    "send_window_end_minute": 30,
+    "no_send_days": ["Saturday", "Sunday"],
+    "days_to_look_back": 1,
+    "skip_domains": ["vibes.com"]
+  },
+  "browser": {
+    "chrome_binary": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "chrome_user_data_dir": "~/Library/Application Support/Google/Chrome",
+    "chrome_profile": "Default",
+    "use_cdp_port": 9222,
+    "headless": false,
+    "min_action_delay_s": 2.0,
+    "max_action_delay_s": 8.0,
+    "min_typing_delay_ms": 80,
+    "max_typing_delay_ms": 150,
+    "between_items_min_s": 45,
+    "between_items_max_s": 180
+  },
+  "research": {
+    "max_search_results": 5,
+    "news_lookback_days": 90
+  },
+  "apollo": {
+    "base_url": "https://app.apollo.io"
+  },
+  "outlook_web": {
+    "base_url": "https://outlook.office.com/mail/"
+  }
+}
